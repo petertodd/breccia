@@ -2,8 +2,10 @@
 #![allow(dead_code)]
 #![allow(unused_variables)]
 
+use std::cmp::Ordering;
 use std::collections::VecDeque;
 use std::io::{self, Read, Write, Seek, SeekFrom};
+use std::ops::Range;
 use std::fmt;
 
 mod buffer;
@@ -28,7 +30,7 @@ impl<B: Read + Seek> Breccia<B> {
 
     pub fn blobs<'a>(&'a mut self) -> io::Result<Blobs<'a, B>> {
         self.fd.seek(SeekFrom::Start(0))?;
-        Ok(Blobs::new(&mut self.fd))
+        Blobs::new(&mut self.fd)
     }
 }
 
@@ -37,11 +39,12 @@ pub struct Blobs<'a, B> {
     buffer: Buffer<&'a mut B>,
 }
 
-impl<'a, B> Blobs<'a, B> {
-    fn new(fd: &'a mut B) -> Self {
-        Self {
-            buffer: Buffer::new(fd)
-        }
+impl<'a, B: Seek> Blobs<'a, B> {
+    fn new(fd: &'a mut B) -> io::Result<Self> {
+        let offset = fd.seek(SeekFrom::Current(0))?;
+        Ok(Self {
+            buffer: Buffer::new_with_offset(fd, offset)
+        })
     }
 }
 
@@ -57,7 +60,7 @@ impl<'a, B: Read> Blobs<'a, B> {
 
             if let Some(potential_marker) = self.buffer.buffer().get(blob_len .. blob_len + 8) {
                 let expected_marker = offset_to_marker(self.buffer.offset() + (blob_len as u64));
-                if potential_marker == expected_marker.to_le_bytes() {
+                if dbg!(potential_marker) == dbg!(expected_marker.to_le_bytes()) {
                     let offset = self.buffer.offset();
                     let blob_with_marker = self.buffer.consume(blob_len + 8);
                     let blob = &blob_with_marker[0 .. blob_len];
@@ -120,6 +123,52 @@ impl<B: Seek + Write> Breccia<B> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum NextTarget {
+    Left,
+    Right,
+    Next,
+}
+
+impl<B: Seek + Read> Breccia<B> {
+    pub fn binary_search_by<F, T>(&mut self, f: F) -> io::Result<Option<T>>
+        where F: FnMut(u64, &[u8]) -> Result<Option<T>, NextTarget>
+    {
+        let end_offset = self.fd.seek(SeekFrom::End(0))?;
+        self.binary_search_in_range_by(f, 0 .. end_offset)
+    }
+
+    pub fn binary_search_in_range_by<F, T>(&mut self, mut f: F, range: Range<u64>) -> io::Result<Option<T>>
+        where F: FnMut(u64, &[u8]) -> Result<Option<T>, NextTarget>
+    {
+        dbg!(&range);
+        assert!(range.start <= range.end);
+        let midpoint = range.start.midpoint(range.end);
+
+        self.fd.seek(SeekFrom::Start(midpoint))?;
+        let mut blobs = Blobs::new(&mut self.fd)?;
+
+        loop {
+            match blobs.next()? {
+                None => break Ok(None),
+                Some((offset, blob)) => {
+                    if offset < range.end {
+                        match f(offset, blob) {
+                            Ok(Some(r)) => break Ok(Some(r)),
+                            Ok(None) => break Ok(None),
+                            Err(NextTarget::Next) => {},
+                            Err(NextTarget::Left) => break self.binary_search_in_range_by(f, range.start .. midpoint),
+                            Err(NextTarget::Right) => break self.binary_search_in_range_by(f, midpoint .. range.end),
+                        }
+                    } else {
+                        todo!("return Ok(None), right?")
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -127,26 +176,55 @@ mod tests {
     use std::io::Cursor;
 
     #[test]
-    fn write_blob() {
+    fn write_blob() -> io::Result<()> {
         let b = Cursor::new(vec![]);
-        let mut b = Breccia::open(b).unwrap();
+        let mut b = Breccia::open(b)?;
 
         dbg!(offset_to_marker(8).to_le_bytes());
         dbg!(&b);
-        dbg!(b.write_blob(&[0xff - 8, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 42]).unwrap());
-        dbg!(b.write_blob(b"hello world!!!!!!!!").unwrap());
+        dbg!(b.write_blob(&[0xff - 8, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 42])?);
+        dbg!(b.write_blob(b"hello world!!!!!!!!")?);
         println!("{:?}", b.fd);
 
-        let mut blobs = b.blobs().unwrap();
+        let mut blobs = b.blobs()?;
 
         dbg!(&blobs);
-        dbg!(blobs.next());
-        dbg!(blobs.next());
-        dbg!(blobs.next());
-        dbg!(blobs.next());
-        dbg!(blobs.next());
-        dbg!(blobs.next());
-        dbg!(blobs.next());
+        dbg!(blobs.next()?);
+        dbg!(blobs.next()?);
+        dbg!(blobs.next()?);
+        dbg!(blobs.next()?);
+        dbg!(blobs.next()?);
+        dbg!(blobs.next()?);
+        dbg!(blobs.next()?);
         dbg!(&blobs);
+
+        Ok(())
+    }
+
+    #[test]
+    fn binary_search() -> io::Result<()> {
+        let b = Cursor::new(vec![]);
+        let mut b = Breccia::open(b)?;
+
+        for n in 0u32 .. 100 {
+            b.write_blob(&n.to_le_bytes())?;
+        }
+
+        let target: u32 = 42;
+        dbg!(b.binary_search_by(|offset, blob| {
+            if let Ok(blob) = dbg!(blob).try_into() {
+                let n = u32::from_le_bytes(blob);
+
+                match target.cmp(&n) {
+                    Ordering::Less => Err(NextTarget::Left),
+                    Ordering::Greater => Err(NextTarget::Right),
+                    Ordering::Equal => Ok(Some(target)),
+                }
+            } else {
+                Err(NextTarget::Next)
+            }
+        })?);
+
+        Ok(())
     }
 }

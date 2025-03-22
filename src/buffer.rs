@@ -31,9 +31,13 @@ impl<R: fmt::Debug> fmt::Debug for Buffer<R> {
 
 impl<R> Buffer<R> {
     pub fn new(inner: R) -> Self {
+        Self::new_with_offset(inner, 0)
+    }
+
+    pub fn new_with_offset(inner: R, offset: u64) -> Self {
         Self {
             inner,
-            offset: 0,
+            offset,
             start: 0,
             end: 0,
             buf: vec![],
@@ -87,6 +91,17 @@ impl<R: Read> Buffer<R> {
             }
         }
         Ok(())
+    }
+}
+
+impl<R: Seek> Buffer<R> {
+    /// Seek to a new position.
+    pub fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        // TODO: avoid flushing the buffer
+        self.offset = self.inner.seek(pos)?;
+        self.start = 0;
+        self.end = 0;
+        Ok(self.offset)
     }
 }
 
