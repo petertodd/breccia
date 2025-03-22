@@ -1,3 +1,5 @@
+#![feature(slice_as_chunks)]
+
 #![allow(unused_imports)]
 #![allow(dead_code)]
 #![allow(unused_variables)]
@@ -8,13 +10,139 @@ use std::io::{self, Read, Write, Seek, SeekFrom};
 use std::ops::Range;
 use std::fmt;
 
+mod offset;
+pub use offset::Offset;
+
+mod header;
+pub use header::Header;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Breccia<F, H = ()> {
+    header: H,
+    fd: F,
+    clean: bool,
+}
+
+impl<F: Write + Seek, H: Header> Breccia<F, H> {
+    pub fn create(mut fd: F, header: H) -> io::Result<Self> {
+        fd.seek(SeekFrom::Start(0))?;
+        fd.write_all(H::MAGIC)?;
+
+        let mut header_bytes = vec![0u8; H::SIZE];
+        header.serialize(&mut header_bytes);
+        fd.write_all(&header_bytes)?;
+
+        Ok(Self {
+            header,
+            fd,
+            clean: true,
+        })
+    }
+
+    pub fn write_blob(&mut self, blob: &[u8]) -> io::Result<Offset<H>> {
+        // FIXME: we should actually just keep track of what the offset should be, and error out if
+        // the file is changed underneath us
+
+        let end_offset = self.fd.seek(SeekFrom::End(0))?;
+
+        let blob_offset = Offset::<H>::try_from_file_offset(end_offset).expect("TODO");
+
+        if self.clean != true {
+            todo!()
+        }
+
+        // determine how much padding we need
+        let mut padding = 0;
+        'outer: loop {
+            // Note that the last chunk can't actually collide except for truly enormous files.
+            // FIXME: should we use 0 padding so we can actually test this?
+            let (chunks, tail) = blob.as_chunks::<8>();
+            let last_chunk = if tail.len() > 0 {
+                let mut b = [0xfe; 8];
+                (&mut b[0 .. tail.len()]).copy_from_slice(tail);
+                Some(b)
+            } else {
+                None
+            };
+
+            let chunks = chunks.into_iter().chain(last_chunk.as_ref());
+            for (i, chunk) in chunks.enumerate() {
+                if (blob_offset.offset(padding).offset(i)).to_marker() == *chunk {
+                    padding += 1;
+                    continue 'outer
+                }
+            }
+            break
+        }
+
+        for _ in 0 .. padding {
+            self.fd.write(&[0xff; 8])?;
+        }
+        let blob_offset = blob_offset.offset(padding);
+
+        self.fd.write(blob)?;
+
+        let end_padding_len = blob.len().next_multiple_of(8) - blob.len();
+        let end_padding = &[0xfe; 7][0 .. end_padding_len];
+        self.fd.write(end_padding)?;
+
+        let end_marker_offset = blob_offset.offset((blob.len() + end_padding.len()) / 8);
+        self.fd.write(&end_marker_offset.to_marker())?;
+
+        Ok(blob_offset)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::io::Cursor;
+
+    #[test]
+    fn write_blob() -> io::Result<()> {
+        let mut buf = Cursor::new(vec![]);
+        let mut b = Breccia::create(&mut buf, ())?;
+
+        let offset = b.write_blob(&[])?;
+        assert_eq!(offset.raw, 0);
+
+        let offset = b.write_blob(&[])?;
+        assert_eq!(offset.raw, 1);
+
+        let offset = b.write_blob(&[42])?;
+        assert_eq!(offset.raw, 2);
+
+        assert_eq!(buf.get_ref(),
+            &[0,0,0,0,0,0,0,0,
+              1,0,0,0,0,0,0,0,
+              42,0xfe,0xfe,0xfe,0xfe,0xfe,0xfe,0xfe,
+              3,0,0,0,0,0,0,0]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn write_colliding_blob() -> io::Result<()> {
+        let mut buf = Cursor::new(vec![]);
+        let mut b = Breccia::create(&mut buf, ())?;
+
+        let offset = b.write_blob(&[0,0,0,0,0,0,0,0])?;
+        assert_eq!(offset.raw, 1);
+
+        assert_eq!(buf.get_ref(),
+            &[255,255,255,255,255,255,255,255,
+              0,0,0,0,0,0,0,0,
+              2,0,0,0,0,0,0,0]);
+
+        Ok(())
+    }
+}
+
+/*
 mod buffer;
 use self::buffer::Buffer;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Breccia<B> {
-    fd: B,
-}
 
 fn offset_to_marker(offset: u64) -> u64 {
     !offset
@@ -228,3 +356,4 @@ mod tests {
         Ok(())
     }
 }
+*/
