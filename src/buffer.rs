@@ -28,7 +28,6 @@ impl<R: fmt::Debug> fmt::Debug for Buffer<R> {
     }
 }
 
-
 impl<R> Buffer<R> {
     pub fn new(inner: R) -> Self {
         Self::new_with_offset(inner, 0)

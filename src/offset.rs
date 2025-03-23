@@ -17,6 +17,13 @@ pub enum TryFromFileOffsetError {
 }
 
 impl<H: Header> Offset<H> {
+    pub fn new(raw: u64) -> Self {
+        Self {
+            raw,
+            _marker: PhantomData,
+        }
+    }
+
     pub fn try_from_file_offset(file_offset: u64) -> Result<Self, TryFromFileOffsetError> {
         let offset = file_offset.checked_sub((H::MAGIC.len() + H::SIZE) as u64)
                                 .ok_or(TryFromFileOffsetError::WithinHeader)?;
@@ -25,17 +32,11 @@ impl<H: Header> Offset<H> {
             return Err(TryFromFileOffsetError::Unaligned);
         }
 
-        Ok(Self {
-            raw: file_offset / 8,
-            _marker: PhantomData,
-        })
+        Ok(Self::new(file_offset / 8))
     }
 
     pub(crate) fn offset(self, n: usize) -> Self {
-        Self {
-            raw: self.raw + n as u64,
-            _marker: PhantomData,
-        }
+        Self::new(self.raw + n as u64)
     }
 
     pub(crate) fn to_marker(self) -> [u8; 8] {
