@@ -5,19 +5,27 @@ use std::ops;
 
 use super::Header;
 
+/// An offset to a blob inside of a `Breccia`.
 pub struct Offset<H> {
     pub(crate) raw: u64,
     _marker: PhantomData<fn(&H) -> ()>,
 }
 
+/// Error returns when conversion from a 'u64' file offset fails.
 #[derive(Debug, PartialEq, Eq)]
 pub enum TryFromFileOffsetError {
+    /// The file offset was within the header.
     WithinHeader,
+
+    /// The offset was not aligned to a marker.
     Unaligned,
 }
 
 impl<H> Offset<H> {
-    pub const fn new(raw: u64) -> Self {
+    /// Creates a new offset.
+    ///
+    /// The value is *not* a file offset.
+    pub(crate) const fn new(raw: u64) -> Self {
         Self {
             raw,
             _marker: PhantomData,
@@ -26,7 +34,7 @@ impl<H> Offset<H> {
 }
 
 impl<H: Header> Offset<H> {
-    pub fn try_from_file_offset(file_offset: u64) -> Result<Self, TryFromFileOffsetError> {
+    pub(crate) fn try_from_file_offset(file_offset: u64) -> Result<Self, TryFromFileOffsetError> {
         let offset = file_offset.checked_sub((H::MAGIC.len() + H::SIZE) as u64)
                                 .ok_or(TryFromFileOffsetError::WithinHeader)?;
 

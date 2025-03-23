@@ -18,11 +18,12 @@ mod header;
 pub use header::Header;
 
 mod marker;
-pub use marker::Marker;
+pub(crate) use marker::Marker;
 
 mod buffer;
 use self::buffer::Buffer;
 
+/// The main interface to a breccia blob storage, backed by a seekable byte stream.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Breccia<F, H = ()> {
     header: H,
@@ -30,7 +31,15 @@ pub struct Breccia<F, H = ()> {
     clean: bool,
 }
 
+impl<F, H> Breccia<F, H> {
+    /// Returns a reference to the header.
+    pub fn header(&self) -> &H {
+        &self.header
+    }
+}
+
 impl<F: Write + Seek, H: Header> Breccia<F, H> {
+    /// Creates a new breccia.
     pub fn create(mut fd: F, header: H) -> io::Result<Self> {
         fd.seek(SeekFrom::Start(0))?;
         fd.write_all(H::MAGIC)?;
@@ -47,7 +56,38 @@ impl<F: Write + Seek, H: Header> Breccia<F, H> {
             clean: true,
         })
     }
+}
 
+impl<F: Read + Seek, H: Header> Breccia<F, H> {
+    /// Opens a new `Breccia`.
+    pub fn open(mut fd: F) -> io::Result<Self> {
+        fd.seek(SeekFrom::Start(0))?;
+
+        let mut actual_magic = vec![0u8; H::MAGIC.len()];
+        fd.read_exact(&mut actual_magic)?;
+
+        if actual_magic != H::MAGIC {
+            return Err(io::Error::other("bad magic"));
+        }
+
+        let mut header_bytes = vec![0u8; H::SIZE];
+        fd.read_exact(&mut header_bytes)?;
+        let header = H::deserialize(&header_bytes).map_err(io::Error::other)?;
+
+        // FIXME: check if last blob was written cleanly
+
+        Ok(Self {
+            header,
+            fd,
+            clean: true,
+        })
+    }
+}
+
+impl<F: Write + Seek, H: Header> Breccia<F, H> {
+    /// Writes a new blob to the breccia.
+    ///
+    /// Returns the `Offset` of the written blob.
     pub fn write_blob(&mut self, blob: &[u8]) -> io::Result<Offset<H>> {
         // FIXME: we should actually just keep track of what the offset should be, and error out if
         // the file is changed underneath us
@@ -107,12 +147,14 @@ impl<F: Write + Seek, H: Header> Breccia<F, H> {
 }
 
 impl<F: Read + Seek, H: Header> Breccia<F, H> {
+    /// Returns an iterator over all blobs stored.
     pub fn blobs<'a>(&'a mut self) -> io::Result<Blobs<'a, F, H>> {
         self.fd.seek(SeekFrom::Start((H::MAGIC.len() + H::SIZE) as u64))?;
         Blobs::new(&mut self.fd)
     }
 }
 
+/// An iterator over the blobs (and their offsets) in a `Breccia`.
 pub struct Blobs<'a, B, H> {
     _marker: PhantomData<&'a H>,
     buffer: Buffer<&'a mut B>,
@@ -202,6 +244,7 @@ impl<'a, B: Read + Seek, H: Header> Blobs<'a, B, H> {
     }
 }
 
+/// Enum used for binary searching.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Search {
     /// The target should be to the left of this blob.
@@ -224,6 +267,7 @@ impl<B: Read + Seek, H: Header> Breccia<B, H> {
         Ok(Offset::try_from_file_offset(end_file_offset).expect("TODO"))
     }
 
+    /// Binary searches for a given blob.
     pub fn binary_search<F, R>(&mut self, f: F) -> io::Result<Option<R>>
         where F: FnMut(Offset<H>, &[u8]) -> Result<Option<R>, Search>
     {
@@ -231,6 +275,7 @@ impl<B: Read + Seek, H: Header> Breccia<B, H> {
         self.binary_search_in_range(f, Offset::new(0) .. last_offset)
     }
 
+    /// Binary searches for a given blob, within an `Offset` range.
     pub fn binary_search_in_range<F, R>(&mut self, mut f: F, range: Range<Offset<H>>) -> io::Result<Option<R>>
         where F: FnMut(Offset<H>, &[u8]) -> Result<Option<R>, Search>
     {
@@ -400,6 +445,41 @@ mod tests {
             })?,
             Some(*expected_offset));
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn create_and_open() -> io::Result<()> {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        struct FooHeader {
+            major: u8,
+        }
+
+        impl Header for FooHeader {
+            const MAGIC: &[u8] = b"magical";
+            const SIZE: usize = 1;
+
+            type DeserializeError = std::convert::Infallible;
+
+            fn serialize(&self, dst: &mut [u8]) {
+                dst[0] = self.major;
+            }
+
+            fn deserialize(src: &[u8]) -> Result<Self, Self::DeserializeError> {
+                Ok(Self { major: src[0] })
+            }
+        }
+
+        let mut buf = Cursor::new(vec![]);
+        let expected_header = FooHeader { major: 1 };
+        let _ = Breccia::create(&mut buf, expected_header)?;
+
+        assert_eq!(buf.get_ref(),
+                   &[109, 97, 103, 105, 99, 97, 108, 1, 0, 0, 0, 0, 0, 0, 0, 0]);
+
+        let b = Breccia::<_, FooHeader>::open(&mut buf)?;
+        assert_eq!(b.header(), &expected_header);
 
         Ok(())
     }

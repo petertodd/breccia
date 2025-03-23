@@ -6,7 +6,7 @@ pub trait Header : Sized {
 
     fn serialize(&self, dst: &mut [u8]);
 
-    type DeserializeError;
+    type DeserializeError: 'static + std::error::Error + Send + Sync;
     fn deserialize(src: &[u8]) -> Result<Self, Self::DeserializeError>;
 }
 
