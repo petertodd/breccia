@@ -39,6 +39,8 @@ impl<F: Write + Seek, H: Header> Breccia<F, H> {
         header.serialize(&mut header_bytes);
         fd.write_all(&header_bytes)?;
 
+        fd.write_all(&Marker::new(Offset::<H>::new(0), 0).to_bytes())?;
+
         Ok(Self {
             header,
             fd,
@@ -52,7 +54,7 @@ impl<F: Write + Seek, H: Header> Breccia<F, H> {
 
         let end_offset = self.fd.seek(SeekFrom::End(0))?;
 
-        let blob_offset = Offset::<H>::try_from_file_offset(end_offset).expect("TODO");
+        let blob_offset = Offset::<H>::try_from_file_offset(end_offset - Marker::SIZE as u64).expect("TODO");
 
         if self.clean != true {
             todo!()
@@ -75,7 +77,7 @@ impl<F: Write + Seek, H: Header> Breccia<F, H> {
             let chunks = chunks.into_iter().chain(last_chunk.as_ref());
             for (i, chunk) in chunks.enumerate() {
                 let possible_marker = Marker::from(chunk);
-                if blob_offset.offset(padding).offset(i) == possible_marker.offset() {
+                if blob_offset.offset(1).offset(padding).offset(i) == possible_marker.offset() {
                     padding += 1;
                     continue 'outer
                 }
@@ -83,18 +85,20 @@ impl<F: Write + Seek, H: Header> Breccia<F, H> {
             break
         }
 
-        for _ in 0 .. padding {
-            self.fd.write(&[0xff; 8])?;
+        for i in 0 .. padding {
+            let pad_offset = blob_offset.offset(1 + i);
+            let marker = Marker::new(pad_offset, Marker::SIZE - 1);
+            self.fd.write(&marker.to_bytes())?;
         }
         let blob_offset = blob_offset.offset(padding);
 
         self.fd.write(blob)?;
 
-        let end_padding_len = blob.len().next_multiple_of(8) - blob.len();
-        let end_padding = &[0xfe; 7][0 .. end_padding_len];
+        let end_padding_len = blob.len().next_multiple_of(Marker::SIZE) - blob.len();
+        let end_padding = &[0xfe; Marker::SIZE - 1][0 .. end_padding_len];
         self.fd.write(end_padding)?;
 
-        let end_marker_offset = blob_offset.offset((blob.len() + end_padding.len()) / 8);
+        let end_marker_offset = blob_offset.offset(1 + ((blob.len() + end_padding.len()) / Marker::SIZE));
         let marker = Marker::new(end_marker_offset, end_padding.len());
         self.fd.write(&marker.to_bytes())?;
 
@@ -118,9 +122,34 @@ pub struct Blobs<'a, B, H> {
 impl<'a, B: Read + Seek, H: Header> Blobs<'a, B, H> {
     fn new(fd: &'a mut B) -> io::Result<Self> {
         let offset = fd.seek(SeekFrom::Current(0))?;
+
+        // FIXME: what should we do if we're unaligned?
+        let offset = Offset::<H>::try_from_file_offset(offset).expect("TODO");
+
+        let mut buffer = Buffer::new_with_offset(fd, offset.to_file_offset());
+
+        // FIXME: this could be more efficient
+        loop {
+            buffer.fill(Marker::SIZE)?;
+
+            if let Some(potential_marker) = buffer.buffer().get(0 .. Marker::SIZE) {
+                let potential_marker: &[u8; 8] = potential_marker.try_into().unwrap();
+                let potential_marker = Marker::from(potential_marker);
+
+                if potential_marker.offset() == offset {
+                    buffer.consume(Marker::SIZE);
+                    break
+                }
+                buffer.consume(Marker::SIZE);
+            } else {
+                // We did *not* get a potential marker, which indicates we're at end-of-file
+                break
+            }
+        }
+
         Ok(Self {
+            buffer,
             _marker: PhantomData,
-            buffer: Buffer::new_with_offset(fd, offset)
         })
     }
 
@@ -133,15 +162,20 @@ impl<'a, B: Read + Seek, H: Header> Blobs<'a, B, H> {
                 self.buffer.fill(512)?;
             };
 
-            if let Some(potential_marker) = self.buffer.buffer().get(blob_len .. blob_len + 8) {
+            if let Some(potential_marker) = self.buffer.buffer().get(blob_len .. blob_len + Marker::SIZE) {
                 let potential_marker: &[u8; 8] = potential_marker.try_into().unwrap();
                 let potential_marker = Marker::from(potential_marker);
 
                 let marker_file_offset = self.buffer.offset() + (blob_len as u64);
                 let offset = Offset::<H>::try_from_file_offset(marker_file_offset).unwrap();
                 if dbg!(potential_marker.offset()) == dbg!(offset) {
-                    let offset = Offset::<H>::try_from_file_offset(self.buffer.offset()).unwrap();
-                    let blob_with_marker = self.buffer.consume(blob_len + 8);
+                    let offset = Offset::<H>::try_from_file_offset(self.buffer.offset() - (Marker::SIZE as u64)).unwrap();
+                    let blob_with_marker = self.buffer.consume(blob_len + Marker::SIZE);
+
+                    if blob_len < potential_marker.padding_len() {
+                        panic!("FIXME: padding: {} < {}", blob_len, potential_marker.padding_len());
+                    }
+
                     let blob = &blob_with_marker[0 .. blob_len - potential_marker.padding_len()];
                     break Ok(Some((offset, blob)))
                 } else {
@@ -149,6 +183,59 @@ impl<'a, B: Read + Seek, H: Header> Blobs<'a, B, H> {
                 }
             } else {
                 // We reached the end of the file without finding a valid marker
+                break Ok(None)
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Search {
+    Next,
+    Left,
+    Right,
+}
+
+impl<B: Read + Seek, H: Header> Breccia<B, H> {
+    fn last_offset(&mut self) -> io::Result<Offset<H>> {
+        if !self.clean {
+            todo!()
+        }
+
+        let mut end_file_offset = self.fd.seek(SeekFrom::End(-8))?;
+        Ok(Offset::try_from_file_offset(end_file_offset).expect("TODO"))
+    }
+
+    pub fn binary_search<F, R>(&mut self, f: F) -> io::Result<Option<R>>
+        where F: FnMut(Offset<H>, &[u8]) -> Result<Option<R>, Search>
+    {
+        let last_offset = self.last_offset()?;
+        self.binary_search_in_range(f, Offset::new(0) .. last_offset)
+    }
+
+    pub fn binary_search_in_range<F, R>(&mut self, mut f: F, range: Range<Offset<H>>) -> io::Result<Option<R>>
+        where F: FnMut(Offset<H>, &[u8]) -> Result<Option<R>, Search>
+    {
+        dbg!(&range);
+        let midpoint = dbg!(range.start.midpoint(range.end));
+
+        self.fd.seek(SeekFrom::Start(midpoint.to_file_offset()))?;
+        let mut blobs = Blobs::<B, H>::new(&mut self.fd)?;
+
+        loop {
+            // FIXME: handle a degenerate range
+            if let Some((offset, blob)) = blobs.next()? {
+                match f(offset, blob) {
+                    Ok(Some(r)) => break Ok(Some(r)),
+                    Ok(None) => break Ok(None),
+                    Err(Search::Next) => {
+                        // FIXME: handle the midpoint in this case
+                        continue
+                    },
+                    Err(Search::Right) => break self.binary_search_in_range(f, midpoint .. range.end),
+                    Err(Search::Left) => break self.binary_search_in_range(f, range.start .. midpoint),
+                }
+            } else {
                 break Ok(None)
             }
         }
@@ -179,8 +266,9 @@ mod tests {
         assert_eq!(buf.get_ref(),
             &[0,0,0,0,0,0,0,0,
               1,0,0,0,0,0,0,0,
+              2,0,0,0,0,0,0,0,
               42,0xfe,0xfe,0xfe,0xfe,0xfe,0xfe,0xfe,
-              3,0,0,0,0,0,0,0b111_0_0000]);
+              4,0,0,0,0,0,0,0b111_0_0000]);
 
         Ok(())
     }
@@ -190,13 +278,14 @@ mod tests {
         let mut buf = Cursor::new(vec![]);
         let mut b = Breccia::create(&mut buf, ())?;
 
-        let offset = b.write_blob(&[0,0,0,0,0,0,0,0b111_0_0000])?;
+        let offset = b.write_blob(&[1,0,0,0,0,0,0,0b1110_0000])?;
         assert_eq!(offset.raw, 1);
 
         assert_eq!(buf.get_ref(),
-            &[255,255,255,255,255,255,255,255,
-              0,0,0,0,0,0,0,0b111_0_0000,
-              2,0,0,0,0,0,0,0]);
+            &[0,0,0,0,0,0,0,0,
+              1,0,0,0,0,0,0,0b1110_0000,
+              1,0,0,0,0,0,0,0b1110_0000,
+              3,0,0,0,0,0,0,0]);
 
         Ok(())
     }
@@ -210,19 +299,78 @@ mod tests {
         assert_eq!(blobs.next()?, None);
         assert_eq!(blobs.next()?, None);
 
-        b.write_blob(&[])?;
+        assert_eq!(b.write_blob(&[])?,
+                   Offset::new(0));
 
         let mut blobs = b.blobs()?;
         assert_eq!(blobs.next()?, Some((Offset::new(0), &[][..])));
         assert_eq!(blobs.next()?, None);
         assert_eq!(blobs.next()?, None);
 
-        b.write_blob(b"hello world!")?;
+        assert_eq!(b.write_blob(b"hello world!")?,
+                   Offset::new(1));
+
         let mut blobs = b.blobs()?;
         assert_eq!(blobs.next()?, Some((Offset::new(0), &[][..])));
         assert_eq!(blobs.next()?, Some((Offset::new(1), &b"hello world!"[..])));
         assert_eq!(blobs.next()?, None);
         assert_eq!(blobs.next()?, None);
+
+        Ok(())
+    }
+
+    #[test]
+    fn binary_search_on_empty_blobs() -> io::Result<()> {
+        let mut buf = Cursor::new(vec![]);
+        let mut b = Breccia::create(&mut buf, ())?;
+
+        assert_eq!(b.binary_search(|_offset, _blob| panic!("should not be called"))?,
+                   None::<()>);
+
+        b.write_blob(&[])?;
+        assert_eq!(b.binary_search(|offset, blob| {
+            assert_eq!(blob, &[]);
+            Ok(Some(offset))
+        })?,
+        Some(Offset::new(0)));
+
+        b.write_blob(&[])?;
+        assert_eq!(b.binary_search(|offset, blob| {
+            assert_eq!(blob, &[]);
+            Ok(Some(offset))
+        })?,
+        Some(Offset::new(1)));
+
+        Ok(())
+    }
+
+    #[test]
+    fn binary_search_for_ints() -> io::Result<()> {
+        let mut buf = Cursor::new(vec![]);
+        let mut b = Breccia::create(&mut buf, ())?;
+
+        let mut expected_offsets = vec![];
+        for i in 0 .. 1u32 {
+            let offset = b.write_blob(&i.to_le_bytes())?;
+            expected_offsets.push((i, offset));
+        }
+
+        dbg!(&b);
+
+        for (i, expected_offset) in &expected_offsets[0 .. 1] {
+            assert_eq!(b.binary_search(|offset, blob| {
+                let blob = dbg!(blob.try_into().unwrap());
+                let found = dbg!(u32::from_le_bytes(blob));
+                if *i == found {
+                    Ok(Some(offset))
+                } else if *i < found {
+                    Err(Search::Left)
+                } else { // if i > found
+                    Err(Search::Right)
+                }
+            })?,
+            Some(*expected_offset));
+        }
 
         Ok(())
     }

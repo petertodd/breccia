@@ -37,8 +37,16 @@ impl<H: Header> Offset<H> {
         Ok(Self::new(file_offset / 8))
     }
 
+    pub(crate) fn to_file_offset(self) -> u64 {
+        (self.raw * 8) + (H::MAGIC.len() + H::SIZE) as u64
+    }
+
     pub(crate) fn offset(self, n: usize) -> Self {
         Self::new(self.raw + n as u64)
+    }
+
+    pub(crate) fn midpoint(self, rhs: Offset<H>) -> Self {
+        Self::new(self.raw.midpoint(rhs.raw))
     }
 }
 

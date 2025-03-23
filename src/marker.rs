@@ -1,9 +1,11 @@
 use super::{Offset, Header};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Marker([u8; 8]);
+pub struct Marker([u8; Self::SIZE]);
 
 impl Marker {
+    pub const SIZE: usize = size_of::<u64>();
+
     const PADDING_LEN_OFFSET: u32 = u64::BITS - 3;
     pub const fn new<H>(offset: Offset<H>, padding_len: usize) -> Self {
         Marker(((offset.raw & !(0b111 << Self::PADDING_LEN_OFFSET)) | ((padding_len as u64) << Self::PADDING_LEN_OFFSET)).to_le_bytes())
@@ -17,19 +19,19 @@ impl Marker {
         (u64::from_le_bytes(self.0) >> Self::PADDING_LEN_OFFSET) as usize
     }
 
-    pub const fn to_bytes(self) -> [u8; 8] {
+    pub const fn to_bytes(self) -> [u8; Self::SIZE] {
         self.0
     }
 }
 
-impl From<[u8; 8]> for Marker {
-    fn from(inner: [u8; 8]) -> Self {
+impl From<[u8; Self::SIZE]> for Marker {
+    fn from(inner: [u8; Self::SIZE]) -> Self {
         Self(inner)
     }
 }
 
-impl From<&[u8; 8]> for Marker {
-    fn from(inner: &[u8; 8]) -> Self {
+impl From<&[u8; Self::SIZE]> for Marker {
+    fn from(inner: &[u8; Self::SIZE]) -> Self {
         Self(*inner)
     }
 }
