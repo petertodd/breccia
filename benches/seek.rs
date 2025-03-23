@@ -10,13 +10,31 @@ use std::io;
 use breccia::{Breccia, Search};
 
 #[bench]
+fn write_blobs(bencher: &mut Bencher) -> io::Result<()> {
+    bencher.iter(|| {
+        let f = tempfile::tempfile().unwrap();
+        let mut b = Breccia::create(f, ()).unwrap();
+        for i in 0u64 .. 10_000 {
+            let mut blob = vec![0u8; 0];
+            blob.extend_from_slice(&i.to_le_bytes());
+
+            blob.resize(8 + rand::random_range(0 .. 100), 42u8);
+
+            b.write_blob(&blob).unwrap();
+        }
+    });
+
+    Ok(())
+}
+
+#[bench]
 fn random_seeks(bencher: &mut Bencher) -> io::Result<()> {
-    let mut f = tempfile::tempfile()?;
+    let f = tempfile::tempfile()?;
 
     let mut b = Breccia::create(f, ())?;
 
     let mut offsets = vec![];
-    for i in 0u64 .. 1_000_000 {
+    for i in 0u64 .. 50_000 {
         let mut blob = vec![0u8; 0];
         blob.extend_from_slice(&i.to_le_bytes());
 
