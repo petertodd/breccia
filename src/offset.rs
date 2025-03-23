@@ -12,12 +12,14 @@ pub struct Offset<H> {
 }
 
 /// Error returns when conversion from a 'u64' file offset fails.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(thiserror::Error, Debug, PartialEq, Eq)]
 pub enum TryFromFileOffsetError {
     /// The file offset was within the header.
+    #[error("file offset within header")]
     WithinHeader,
 
     /// The offset was not aligned to a marker.
+    #[error("file offset unaligned")]
     Unaligned,
 }
 
