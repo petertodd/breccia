@@ -142,6 +142,7 @@ impl<F: Write + Seek, H: Header> Breccia<F, H> {
         let marker = Marker::new(end_marker_offset, end_padding.len());
         self.fd.write(&marker.to_bytes())?;
 
+        self.fd.flush()?;
         Ok(blob_offset)
     }
 }
