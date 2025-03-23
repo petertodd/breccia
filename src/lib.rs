@@ -65,9 +65,9 @@ impl<F: Write + Seek, H: Header> Breccia<F, H> {
         'outer: loop {
             // Note that the last chunk can't actually collide except for truly enormous files.
             // FIXME: should we use 0 padding so we can actually test this?
-            let (chunks, tail) = blob.as_chunks::<8>();
+            let (chunks, tail) = blob.as_chunks::<{Marker::SIZE}>();
             let last_chunk = if tail.len() > 0 {
-                let mut b = [0xfe; 8];
+                let mut b = [0xfe; Marker::SIZE];
                 (&mut b[0 .. tail.len()]).copy_from_slice(tail);
                 Some(b)
             } else {
@@ -140,7 +140,7 @@ impl<'a, B: Read + Seek, H: Header> Blobs<'a, B, H> {
             buffer.fill(Marker::SIZE)?;
 
             if let Some(potential_marker) = buffer.buffer().get(0 .. Marker::SIZE) {
-                let potential_marker: &[u8; 8] = potential_marker.try_into().unwrap();
+                let potential_marker: &[u8; Marker::SIZE] = potential_marker.try_into().unwrap();
                 let potential_marker = Marker::from(potential_marker);
 
                 if potential_marker.offset() == offset {
@@ -171,7 +171,7 @@ impl<'a, B: Read + Seek, H: Header> Blobs<'a, B, H> {
 
             if let Some(potential_marker) = self.buffer.buffer().get(blob_len .. blob_len + Marker::SIZE) {
                 // FIXME: handle short reads
-                let potential_marker: &[u8; 8] = potential_marker.try_into().unwrap();
+                let potential_marker: &[u8; Marker::SIZE] = potential_marker.try_into().unwrap();
                 let potential_marker = Marker::from(potential_marker);
 
                 let marker_file_offset = self.buffer.offset() + (blob_len as u64);
@@ -220,7 +220,7 @@ impl<B: Read + Seek, H: Header> Breccia<B, H> {
             todo!()
         }
 
-        let end_file_offset = self.fd.seek(SeekFrom::End(-8))?;
+        let end_file_offset = self.fd.seek(SeekFrom::End(-(Marker::SIZE as i64)))?;
         Ok(Offset::try_from_file_offset(end_file_offset).expect("TODO"))
     }
 
