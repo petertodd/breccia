@@ -113,10 +113,17 @@ impl<F: Read + Seek, H: Header> Breccia<F, H> {
     }
 }
 
-#[derive(Debug)]
 pub struct Blobs<'a, B, H> {
     _marker: PhantomData<&'a H>,
     buffer: Buffer<&'a mut B>,
+}
+
+impl<B: fmt::Debug, H> fmt::Debug for Blobs<'_, B, H> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("Blobs")
+            .field("buffer", &self.buffer)
+            .finish()
+    }
 }
 
 impl<'a, B: Read + Seek, H: Header> Blobs<'a, B, H> {
@@ -124,7 +131,7 @@ impl<'a, B: Read + Seek, H: Header> Blobs<'a, B, H> {
         let offset = fd.seek(SeekFrom::Current(0))?;
 
         // FIXME: what should we do if we're unaligned?
-        let offset = Offset::<H>::try_from_file_offset(offset).expect("TODO");
+        let mut offset = Offset::<H>::try_from_file_offset(offset).expect("TODO");
 
         let mut buffer = Buffer::new_with_offset(fd, offset.to_file_offset());
 
@@ -141,6 +148,7 @@ impl<'a, B: Read + Seek, H: Header> Blobs<'a, B, H> {
                     break
                 }
                 buffer.consume(Marker::SIZE);
+                offset = offset.offset(1);
             } else {
                 // We did *not* get a potential marker, which indicates we're at end-of-file
                 break
@@ -168,7 +176,7 @@ impl<'a, B: Read + Seek, H: Header> Blobs<'a, B, H> {
 
                 let marker_file_offset = self.buffer.offset() + (blob_len as u64);
                 let offset = Offset::<H>::try_from_file_offset(marker_file_offset).unwrap();
-                if dbg!(potential_marker.offset()) == dbg!(offset) {
+                if potential_marker.offset() == offset {
                     let offset = Offset::<H>::try_from_file_offset(self.buffer.offset() - (Marker::SIZE as u64)).unwrap();
                     let blob_with_marker = self.buffer.consume(blob_len + Marker::SIZE);
 
@@ -191,9 +199,14 @@ impl<'a, B: Read + Seek, H: Header> Blobs<'a, B, H> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Search {
-    Next,
+    /// The target should be to the left of this blob.
     Left,
+
+    /// The target should be to the right of this blob.
     Right,
+
+    /// This blob gave no useful information; try the next one.
+    Next,
 }
 
 impl<B: Read + Seek, H: Header> Breccia<B, H> {
@@ -202,7 +215,7 @@ impl<B: Read + Seek, H: Header> Breccia<B, H> {
             todo!()
         }
 
-        let mut end_file_offset = self.fd.seek(SeekFrom::End(-8))?;
+        let end_file_offset = self.fd.seek(SeekFrom::End(-8))?;
         Ok(Offset::try_from_file_offset(end_file_offset).expect("TODO"))
     }
 
@@ -216,8 +229,7 @@ impl<B: Read + Seek, H: Header> Breccia<B, H> {
     pub fn binary_search_in_range<F, R>(&mut self, mut f: F, range: Range<Offset<H>>) -> io::Result<Option<R>>
         where F: FnMut(Offset<H>, &[u8]) -> Result<Option<R>, Search>
     {
-        dbg!(&range);
-        let midpoint = dbg!(range.start.midpoint(range.end));
+        let midpoint = range.start.midpoint(range.end);
 
         self.fd.seek(SeekFrom::Start(midpoint.to_file_offset()))?;
         let mut blobs = Blobs::<B, H>::new(&mut self.fd)?;
@@ -229,14 +241,21 @@ impl<B: Read + Seek, H: Header> Breccia<B, H> {
                     Ok(Some(r)) => break Ok(Some(r)),
                     Ok(None) => break Ok(None),
                     Err(Search::Next) => {
-                        // FIXME: handle the midpoint in this case
                         continue
                     },
                     Err(Search::Right) => break self.binary_search_in_range(f, midpoint .. range.end),
                     Err(Search::Left) => break self.binary_search_in_range(f, range.start .. midpoint),
                 }
             } else {
-                break Ok(None)
+                // We've search the entire range, starting from the midpoint, without finding the
+                // target.
+                //
+                // If the left side is non-empty, we still need to search it.
+                if range.start != midpoint {
+                    break self.binary_search_in_range(f, range.start .. midpoint)
+                } else {
+                    break Ok(None)
+                }
             }
         }
     }
@@ -350,17 +369,15 @@ mod tests {
         let mut b = Breccia::create(&mut buf, ())?;
 
         let mut expected_offsets = vec![];
-        for i in 0 .. 1u32 {
+        for i in 0 .. 100u32 {
             let offset = b.write_blob(&i.to_le_bytes())?;
             expected_offsets.push((i, offset));
         }
 
-        dbg!(&b);
-
-        for (i, expected_offset) in &expected_offsets[0 .. 1] {
+        for (i, expected_offset) in &expected_offsets {
             assert_eq!(b.binary_search(|offset, blob| {
-                let blob = dbg!(blob.try_into().unwrap());
-                let found = dbg!(u32::from_le_bytes(blob));
+                let blob = blob.try_into().unwrap();
+                let found = u32::from_le_bytes(blob);
                 if *i == found {
                     Ok(Some(offset))
                 } else if *i < found {
