@@ -17,6 +17,9 @@ pub use offset::Offset;
 mod header;
 pub use header::Header;
 
+mod marker;
+pub use marker::Marker;
+
 mod buffer;
 use self::buffer::Buffer;
 
@@ -71,7 +74,8 @@ impl<F: Write + Seek, H: Header> Breccia<F, H> {
 
             let chunks = chunks.into_iter().chain(last_chunk.as_ref());
             for (i, chunk) in chunks.enumerate() {
-                if (blob_offset.offset(padding).offset(i)).to_marker() == *chunk {
+                let possible_marker = Marker::from(chunk);
+                if blob_offset.offset(padding).offset(i) == possible_marker.offset() {
                     padding += 1;
                     continue 'outer
                 }
@@ -91,7 +95,8 @@ impl<F: Write + Seek, H: Header> Breccia<F, H> {
         self.fd.write(end_padding)?;
 
         let end_marker_offset = blob_offset.offset((blob.len() + end_padding.len()) / 8);
-        self.fd.write(&end_marker_offset.to_marker())?;
+        let marker = Marker::new(end_marker_offset, end_padding.len());
+        self.fd.write(&marker.to_bytes())?;
 
         Ok(blob_offset)
     }
@@ -129,12 +134,15 @@ impl<'a, B: Read + Seek, H: Header> Blobs<'a, B, H> {
             };
 
             if let Some(potential_marker) = self.buffer.buffer().get(blob_len .. blob_len + 8) {
+                let potential_marker: &[u8; 8] = potential_marker.try_into().unwrap();
+                let potential_marker = Marker::from(potential_marker);
+
                 let marker_file_offset = self.buffer.offset() + (blob_len as u64);
-                let expected_marker = Offset::<H>::try_from_file_offset(marker_file_offset).unwrap();
-                if dbg!(potential_marker) == dbg!(expected_marker.to_marker()) {
+                let offset = Offset::<H>::try_from_file_offset(marker_file_offset).unwrap();
+                if dbg!(potential_marker.offset()) == dbg!(offset) {
                     let offset = Offset::<H>::try_from_file_offset(self.buffer.offset()).unwrap();
                     let blob_with_marker = self.buffer.consume(blob_len + 8);
-                    let blob = &blob_with_marker[0 .. blob_len];
+                    let blob = &blob_with_marker[0 .. blob_len - potential_marker.padding_len()];
                     break Ok(Some((offset, blob)))
                 } else {
                     blob_len += 8;
@@ -172,7 +180,7 @@ mod tests {
             &[0,0,0,0,0,0,0,0,
               1,0,0,0,0,0,0,0,
               42,0xfe,0xfe,0xfe,0xfe,0xfe,0xfe,0xfe,
-              3,0,0,0,0,0,0,0]);
+              3,0,0,0,0,0,0,0b111_0_0000]);
 
         Ok(())
     }
@@ -182,12 +190,12 @@ mod tests {
         let mut buf = Cursor::new(vec![]);
         let mut b = Breccia::create(&mut buf, ())?;
 
-        let offset = b.write_blob(&[0,0,0,0,0,0,0,0])?;
+        let offset = b.write_blob(&[0,0,0,0,0,0,0,0b111_0_0000])?;
         assert_eq!(offset.raw, 1);
 
         assert_eq!(buf.get_ref(),
             &[255,255,255,255,255,255,255,255,
-              0,0,0,0,0,0,0,0,
+              0,0,0,0,0,0,0,0b111_0_0000,
               2,0,0,0,0,0,0,0]);
 
         Ok(())
@@ -209,10 +217,10 @@ mod tests {
         assert_eq!(blobs.next()?, None);
         assert_eq!(blobs.next()?, None);
 
-        b.write_blob(b"hello world!....")?;
+        b.write_blob(b"hello world!")?;
         let mut blobs = b.blobs()?;
         assert_eq!(blobs.next()?, Some((Offset::new(0), &[][..])));
-        assert_eq!(blobs.next()?, Some((Offset::new(1), &b"hello world!...."[..])));
+        assert_eq!(blobs.next()?, Some((Offset::new(1), &b"hello world!"[..])));
         assert_eq!(blobs.next()?, None);
         assert_eq!(blobs.next()?, None);
 
