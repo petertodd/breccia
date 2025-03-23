@@ -163,14 +163,14 @@ impl<'a, B: Read + Seek, H: Header> Blobs<'a, B, H> {
 
     pub fn next(&mut self) -> io::Result<Option<(Offset<H>, &[u8])>> {
         let mut blob_len: usize = 0;
-
         loop {
-            if self.buffer.buffer().len() < blob_len + 8 {
+            if self.buffer.buffer().len() < blob_len + Marker::SIZE {
                 // FIXME: limit maximum blob size
                 self.buffer.fill(512)?;
             };
 
             if let Some(potential_marker) = self.buffer.buffer().get(blob_len .. blob_len + Marker::SIZE) {
+                // FIXME: handle short reads
                 let potential_marker: &[u8; 8] = potential_marker.try_into().unwrap();
                 let potential_marker = Marker::from(potential_marker);
 
@@ -178,16 +178,21 @@ impl<'a, B: Read + Seek, H: Header> Blobs<'a, B, H> {
                 let offset = Offset::<H>::try_from_file_offset(marker_file_offset).unwrap();
                 if potential_marker.offset() == offset {
                     let offset = Offset::<H>::try_from_file_offset(self.buffer.offset() - (Marker::SIZE as u64)).unwrap();
-                    let blob_with_marker = self.buffer.consume(blob_len + Marker::SIZE);
 
                     if blob_len < potential_marker.padding_len() {
-                        panic!("FIXME: padding: {} < {}", blob_len, potential_marker.padding_len());
+                        // Not a valid blob, so this marker was padding. Skip it.
+                        //
+                        // FIXME: what should we do if it's a differnt size? that'd indicate
+                        // (very unlikely) corruption
+                        assert_eq!(potential_marker.padding_len(), Marker::SIZE - 1);
+                        self.buffer.consume(Marker::SIZE);
+                    } else {
+                        let blob_with_marker = self.buffer.consume(blob_len + Marker::SIZE);
+                        let blob = &blob_with_marker[0 .. blob_len - potential_marker.padding_len()];
+                        break Ok(Some((offset, blob)))
                     }
-
-                    let blob = &blob_with_marker[0 .. blob_len - potential_marker.padding_len()];
-                    break Ok(Some((offset, blob)))
                 } else {
-                    blob_len += 8;
+                    blob_len += Marker::SIZE;
                 }
             } else {
                 // We reached the end of the file without finding a valid marker
@@ -299,6 +304,13 @@ mod tests {
 
         let offset = b.write_blob(&[1,0,0,0,0,0,0,0b1110_0000])?;
         assert_eq!(offset.raw, 1);
+
+
+        // validate that the padding is actually skipped over
+        let mut blobs = b.blobs()?;
+        assert_eq!(blobs.next()?,
+                   Some((Offset::new(1), &[1,0,0,0,0,0,0,0b1110_0000][..])));
+        assert_eq!(blobs.next()?, None);
 
         assert_eq!(buf.get_ref(),
             &[0,0,0,0,0,0,0,0,
