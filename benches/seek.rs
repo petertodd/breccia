@@ -7,13 +7,14 @@ use test::bench::{Bencher, black_box};
 
 use std::io;
 
-use breccia::{Breccia, Search};
+use breccia::{BrecciaMut, Search};
+
+use tempfile::tempfile;
 
 #[bench]
 fn write_blobs(bencher: &mut Bencher) -> io::Result<()> {
     bencher.iter(|| {
-        let f = tempfile::tempfile().unwrap();
-        let mut b = Breccia::create(f, ()).unwrap();
+        let mut b = BrecciaMut::create_from_file(tempfile().unwrap(), ()).unwrap();
         for i in 0u64 .. 10_000 {
             let mut blob = vec![0u8; 0];
             blob.extend_from_slice(&i.to_le_bytes());
@@ -29,9 +30,7 @@ fn write_blobs(bencher: &mut Bencher) -> io::Result<()> {
 
 #[bench]
 fn random_seeks(bencher: &mut Bencher) -> io::Result<()> {
-    let f = tempfile::tempfile()?;
-
-    let mut b = Breccia::create(f, ())?;
+    let mut b = BrecciaMut::create_from_file(tempfile()?, ())?;
 
     let mut offsets = vec![];
     for i in 0u64 .. 50_000 {
@@ -56,7 +55,7 @@ fn random_seeks(bencher: &mut Bencher) -> io::Result<()> {
                 } else { // if i > found
                     Err(Search::Right)
                 }
-            }).unwrap(),
+            }),
             Some(*expected_offset));
         }
     });

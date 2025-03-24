@@ -1,9 +1,8 @@
 use std::cmp;
 use std::fmt;
 use std::marker::PhantomData;
-use std::ops;
 
-use super::Header;
+use super::{Header, HeaderExt, Marker};
 
 /// An offset to a blob inside of a `Breccia`.
 pub struct Offset<H> {
@@ -37,18 +36,14 @@ impl<H> Offset<H> {
 
 impl<H: Header> Offset<H> {
     pub(crate) fn try_from_file_offset(file_offset: u64) -> Result<Self, TryFromFileOffsetError> {
-        let offset = file_offset.checked_sub((H::MAGIC.len() + H::SIZE) as u64)
+        let offset = file_offset.checked_sub(H::SIZE_WITH_PADDING as u64)
                                 .ok_or(TryFromFileOffsetError::WithinHeader)?;
 
-        if (offset & 0b111) != 0 {
+        if (offset % (size_of::<Marker>() as u64)) != 0 {
             return Err(TryFromFileOffsetError::Unaligned);
         }
 
-        Ok(Self::new(file_offset / 8))
-    }
-
-    pub(crate) fn to_file_offset(self) -> u64 {
-        (self.raw * 8) + (H::MAGIC.len() + H::SIZE) as u64
+        Ok(Self::new(offset / size_of::<Marker>() as u64))
     }
 
     pub(crate) fn offset(self, n: usize) -> Self {
