@@ -17,9 +17,9 @@ use header::HeaderExt;
 pub use header::Header;
 
 mod marker;
-pub(crate) use marker::Marker;
+use marker::{Marker, State::Clean, State::Dirty};
 
-const _ASSERT_SIZE_OF_USIZE: () = {
+const _: () = {
     if size_of::<usize>() != 8 {
         panic!("only 64-bit platforms are supported")
     }
@@ -159,7 +159,7 @@ impl<H: Header> BrecciaMut<H> {
         let mut padding = &[0; size_of::<Marker>()][0 .. H::PADDING_SIZE];
         fd.write_all(&mut padding)?;
 
-        fd.write_all(&Marker::new(Offset::<H>::new(0), 0).to_bytes())?;
+        fd.write_all(&Marker::new(Offset::<H>::new(0), 0, Clean).to_bytes())?;
 
         Ok(Self {
             inner: Breccia::open_file(fd)?
@@ -210,7 +210,7 @@ impl<H: Header> BrecciaMut<H> {
 
         for i in 0 .. padding {
             let pad_offset = blob_offset.offset(1 + i);
-            let marker = Marker::new(pad_offset, size_of::<Marker>() - 1);
+            let marker = Marker::new_padding(pad_offset);
             self.fd.write(&marker.to_bytes())?;
         }
         let blob_offset = blob_offset.offset(padding);
@@ -222,7 +222,7 @@ impl<H: Header> BrecciaMut<H> {
         self.fd.write(end_padding)?;
 
         let end_marker_offset = blob_offset.offset(1 + ((blob.len() + end_padding.len()) / size_of::<Marker>()));
-        let marker = Marker::new(end_marker_offset, end_padding.len());
+        let marker = Marker::new(end_marker_offset, end_padding.len(), Clean);
         self.fd.write(&marker.to_bytes())?;
 
         // FIXME: this should be a full sync
@@ -445,7 +445,7 @@ mod tests {
         assert_eq!(&b.map[..],
             &[0,0x42,0,0,0,0,0,0,
               0,0,0,0,0,0,0,0,
-              1,0,0,0,0,0,0,0b1110_0000,
+              1,0,0,0,0,0,0,0b1111_0000,
               1,0,0,0,0,0,0,0b1110_0000,
               3,0,0,0,0,0,0,0]);
 

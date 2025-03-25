@@ -1,5 +1,12 @@
 use super::Offset;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum State {
+    Clean = 0,
+    Dirty = 1,
+}
+use self::State::*;
+
 /// A marker used to distinguish blob boundaries, and determine blob length.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Marker(pub(crate) u64);
@@ -8,14 +15,31 @@ impl Marker {
     /// The offset, in bits, that the padding length is encoded in.
     const PADDING_LEN_OFFSET: u32 = u64::BITS - 3;
 
+    const STATE_BIT_OFFSET: u32 = u64::BITS - 4;
+
     /// Creates a new `Marker` from an `Offset` and a padding length.
-    pub const fn new<H>(offset: Offset<H>, padding_len: usize) -> Self {
-        Marker(((offset.raw & !(0b111 << Self::PADDING_LEN_OFFSET)) | ((padding_len as u64) << Self::PADDING_LEN_OFFSET)).to_le())
+    pub const fn new<H>(offset: Offset<H>, padding_len: usize, dirty: State) -> Self {
+        let mut raw = offset.raw;
+        raw |= (padding_len as u64) << Self::PADDING_LEN_OFFSET;
+        raw |= (dirty as u64) << Self::STATE_BIT_OFFSET;
+        Marker(raw.to_le())
+    }
+
+    pub const fn new_padding<H>(offset: Offset<H>) -> Self {
+        Self::new(offset, 7, Dirty)
     }
 
     /// Returns the `Offset` this `Marker` represents.
     pub const fn offset<H>(self) -> Offset<H> {
-        Offset::new(u64::from_le(self.0) & !(0b111 << Self::PADDING_LEN_OFFSET))
+        Offset::new(u64::from_le(self.0) & !(0b1111 << Self::STATE_BIT_OFFSET))
+    }
+
+    pub const fn state(self) -> State {
+        if self.0 & (0b1 << Self::STATE_BIT_OFFSET) == 0 {
+            State::Clean
+        } else {
+            State::Dirty
+        }
     }
 
     /// Returns the padding length encoded in this `Marker`.
@@ -56,10 +80,10 @@ mod tests {
 
     #[test]
     fn test() {
-        let marker = Marker::new(Offset::<()>::new(42), 0b101);
+        let marker = Marker::new(Offset::<()>::new(42), 0b101, Clean);
         assert_eq!(marker.offset(), Offset::<()>::new(42));
         assert_eq!(marker.padding_len(), 0b101);
-        assert_eq!(Marker::new(Offset::<()>::new(42), 0b101).to_bytes(),
+        assert_eq!(Marker::new(Offset::<()>::new(42), 0b101, Clean).to_bytes(),
                   [42,0,0,0,0,0,0,0b101_0_0000]);
     }
 }
