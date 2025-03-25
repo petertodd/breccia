@@ -135,7 +135,7 @@ impl<H: Header> Breccia<H> {
 }
 
 impl<H: Header> BrecciaMut<H> {
-    /// Creates a new breccia.
+    /// Creates a new breccia file.
     pub fn create<P: AsRef<Path>>(path: P, header: H) -> io::Result<Self> {
         let fd = OpenOptions::new()
                     .read(true)
@@ -144,6 +144,18 @@ impl<H: Header> BrecciaMut<H> {
                     .open(path)?;
 
         Self::create_from_file(fd, header)
+    }
+
+    /// Opens an existing breccia file.
+    pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+        let fd = OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(path)?;
+
+        Ok(Self {
+            inner: Breccia::open_file(fd)?
+        })
     }
 
     /// Creates a new breccia from a `File`.
