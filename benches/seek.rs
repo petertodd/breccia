@@ -13,15 +13,17 @@ use tempfile::tempfile;
 
 #[bench]
 fn write_blobs(bencher: &mut Bencher) -> io::Result<()> {
+    let mut b = BrecciaMut::create_from_file(tempfile().unwrap(), ()).unwrap();
+    let mut batch = b.start_batch()?;
+
     bencher.iter(|| {
-        let mut b = BrecciaMut::create_from_file(tempfile().unwrap(), ()).unwrap();
         for i in 0u64 .. 10_000 {
             let mut blob = vec![0u8; 0];
             blob.extend_from_slice(&i.to_le_bytes());
 
             blob.resize(8 + rand::random_range(0 .. 100), 42u8);
 
-            b.write_blob(&blob).unwrap();
+            batch.write_blob(&blob).unwrap();
         }
     });
 
@@ -32,6 +34,7 @@ fn write_blobs(bencher: &mut Bencher) -> io::Result<()> {
 fn random_seeks(bencher: &mut Bencher) -> io::Result<()> {
     let mut b = BrecciaMut::create_from_file(tempfile()?, ())?;
 
+    let mut batch = b.start_batch()?;
     let mut offsets = vec![];
     for i in 0u64 .. 50_000 {
         let mut blob = vec![0u8; 0];
@@ -39,8 +42,9 @@ fn random_seeks(bencher: &mut Bencher) -> io::Result<()> {
 
         blob.resize(8 + rand::random_range(0 .. 100), 42u8);
 
-        offsets.push((i, b.write_blob(&blob)?));
+        offsets.push((i, batch.write_blob(&blob)?));
     }
+    batch.commit()?;
 
     bencher.iter(|| {
         for (i, expected_offset) in &offsets[1000..2000] {

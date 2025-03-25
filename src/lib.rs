@@ -2,7 +2,7 @@
 
 use std::fmt;
 use std::fs::{File, OpenOptions};
-use std::io::{self, Read, Write, Seek, SeekFrom};
+use std::io::{self, BufWriter, Read, Write, Seek, SeekFrom};
 use std::ops::{self, Range};
 use std::path::Path;
 use std::ptr;
@@ -32,7 +32,6 @@ pub struct Breccia<H = ()> {
     map: Mmap,
     markers: *const [Marker],
     fd: File,
-    clean: bool,
 }
 
 /// A mutable `Breccia`, that can have blobs written to it.
@@ -110,7 +109,6 @@ impl<H: Header> Breccia<H> {
             markers: Self::try_map_to_markers_slice(&map)?,
             map,
             fd,
-            clean: true,
         })
     }
 
@@ -120,6 +118,7 @@ impl<H: Header> Breccia<H> {
         }
     }
 
+    /// Reloads the `Breccia` to reflect newly written blobs.
     pub fn reload(&mut self) -> io::Result<()> {
         // FIXME: check if last blob was written cleanly
         let new_map = unsafe {
@@ -172,63 +171,15 @@ impl<H: Header> BrecciaMut<H> {
     ///
     /// Returns the `Offset` of the written blob.
     pub fn write_blob(&mut self, blob: &[u8]) -> io::Result<Offset<H>> {
-        // FIXME: we should actually just keep track of what the offset should be, and error out if
-        // the file is changed underneath us
+        let mut batch = self.start_batch()?;
+        let offset = batch.write_blob(blob)?;
+        batch.commit()?;
+        Ok(offset)
+    }
 
-        let end_offset = self.fd.seek(SeekFrom::End(0))?;
-
-        let blob_offset = Offset::<H>::try_from_file_offset(end_offset - size_of::<Marker>() as u64).expect("TODO");
-
-        if self.clean != true {
-            todo!()
-        }
-
-        // determine how much padding we need
-        let mut padding = 0;
-        'outer: loop {
-            // Note that the last chunk can't actually collide except for truly enormous files.
-            // FIXME: should we use 0 padding so we can actually test this?
-            let (chunks, tail) = blob.as_chunks::<{size_of::<Marker>()}>();
-            let last_chunk = if tail.len() > 0 {
-                let mut b = [0xfe; size_of::<Marker>()];
-                (&mut b[0 .. tail.len()]).copy_from_slice(tail);
-                Some(b)
-            } else {
-                None
-            };
-
-            let chunks = chunks.into_iter().chain(last_chunk.as_ref());
-            for (i, chunk) in chunks.enumerate() {
-                let possible_marker = Marker::from(chunk);
-                if blob_offset.offset(1).offset(padding).offset(i) == possible_marker.offset() {
-                    padding += 1;
-                    continue 'outer
-                }
-            }
-            break
-        }
-
-        for i in 0 .. padding {
-            let pad_offset = blob_offset.offset(1 + i);
-            let marker = Marker::new_padding(pad_offset);
-            self.fd.write(&marker.to_bytes())?;
-        }
-        let blob_offset = blob_offset.offset(padding);
-
-        self.fd.write(blob)?;
-
-        let end_padding_len = blob.len().next_multiple_of(size_of::<Marker>()) - blob.len();
-        let end_padding = &[0xfe; size_of::<Marker>() - 1][0 .. end_padding_len];
-        self.fd.write(end_padding)?;
-
-        let end_marker_offset = blob_offset.offset(1 + ((blob.len() + end_padding.len()) / size_of::<Marker>()));
-        let marker = Marker::new(end_marker_offset, end_padding.len(), Clean);
-        self.fd.write(&marker.to_bytes())?;
-
-        // FIXME: this should be a full sync
-        self.fd.flush()?;
-        self.reload()?;
-        Ok(blob_offset)
+    /// Starts a new `Batch` of blobs.
+    pub fn start_batch<'a>(&'a mut self) -> io::Result<Batch<'a, H>> {
+        Batch::new(self)
     }
 }
 
@@ -359,6 +310,108 @@ impl<H: Header> Breccia<H> {
     }
 }
 
+/// Batch writing.
+#[derive(Debug)]
+pub struct Batch<'a, H> {
+    target: &'a mut BrecciaMut<H>,
+    blob_offset: Offset<H>,
+    fd: BufWriter<File>,
+    pending_marker: Option<Marker>,
+}
+
+impl<'a, H: Header> Batch<'a, H> {
+    fn new(target: &'a mut BrecciaMut<H>) -> io::Result<Self> {
+        let mut fd = target.fd.try_clone()?;
+
+        let blob_offset = fd.seek(SeekFrom::End(-(size_of::<Marker>() as i64)))?;
+        let blob_offset = Offset::<H>::try_from_file_offset(blob_offset as u64)
+                                      .expect("TODO: handle unclean file");
+
+        let mut buf = [0u8; size_of::<Marker>()];
+        fd.read_exact(&mut buf)?;
+
+        let end_marker = Marker::from(buf);
+        if end_marker.state() == Dirty {
+            todo!("handle dirty file")
+        }
+
+        Ok(Self {
+            target,
+            blob_offset,
+            fd: BufWriter::new(fd),
+            pending_marker: None,
+        })
+    }
+
+    /// Writes a blob.
+    ///
+    /// Returns the `Offset` of the newly-written blob.
+    pub fn write_blob(&mut self, blob: &[u8]) -> io::Result<Offset<H>> {
+        if let Some(pending_marker) = self.pending_marker.take() {
+            self.fd.write_all(&pending_marker.to_bytes())?;
+        }
+
+        // determine how much padding we need
+        let mut padding = 0;
+        'outer: loop {
+            // Note that the last chunk can't actually collide except for truly enormous files.
+            // FIXME: should we use 0 padding so we can actually test this?
+            let (chunks, tail) = blob.as_chunks::<{size_of::<Marker>()}>();
+            let last_chunk = if tail.len() > 0 {
+                let mut b = [0xfe; size_of::<Marker>()];
+                (&mut b[0 .. tail.len()]).copy_from_slice(tail);
+                Some(b)
+            } else {
+                None
+            };
+
+            let chunks = chunks.into_iter().chain(last_chunk.as_ref());
+            for (i, chunk) in chunks.enumerate() {
+                let possible_marker = Marker::from(chunk);
+                if self.blob_offset.offset(1).offset(padding).offset(i) == possible_marker.offset() {
+                    padding += 1;
+                    continue 'outer
+                }
+            }
+            break
+        }
+
+        for i in 0 .. padding {
+            let pad_offset = self.blob_offset.offset(1 + i);
+            let marker = Marker::new_padding(pad_offset);
+            self.fd.write(&marker.to_bytes())?;
+        }
+        let blob_offset = self.blob_offset.offset(padding);
+
+        self.fd.write(blob)?;
+
+        let end_padding_len = blob.len().next_multiple_of(size_of::<Marker>()) - blob.len();
+        let end_padding = &[0xfe; size_of::<Marker>() - 1][0 .. end_padding_len];
+        self.fd.write(end_padding)?;
+
+        let end_marker_offset = blob_offset.offset(1 + ((blob.len() + end_padding.len()) / size_of::<Marker>()));
+        self.pending_marker = Some(Marker::new(end_marker_offset, end_padding.len(), Dirty));
+
+        self.blob_offset += 1 + padding + ((blob.len() + end_padding.len()) / size_of::<Marker>());
+        Ok(blob_offset)
+    }
+
+    /// Commits this batch of blobs.
+    pub fn commit(mut self) -> io::Result<()> {
+        if let Some(mut pending_marker) = self.pending_marker.take() {
+            pending_marker.set_state(Clean);
+            self.fd.write_all(&pending_marker.to_bytes())?;
+        } else {
+            panic!("no blobs written");
+        }
+
+        self.fd.flush()?;
+        self.fd.get_mut().sync_all()?;
+        self.target.reload()?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use tempfile::tempfile;
@@ -483,11 +536,14 @@ mod tests {
     fn binary_search_for_ints() -> io::Result<()> {
         let mut b = BrecciaMut::create_from_file(tempfile()?, TestHeader(0x42))?;
 
+        let mut batch = b.start_batch()?;
         let mut expected_offsets = vec![];
         for i in 0 .. 100u32 {
-            let offset = b.write_blob(&i.to_le_bytes())?;
+            let offset = batch.write_blob(&i.to_le_bytes())?;
             expected_offsets.push((i, offset));
         }
+
+        batch.commit()?;
 
         for (i, expected_offset) in &expected_offsets {
             assert_eq!(b.binary_search(|offset, blob| {

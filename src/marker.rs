@@ -34,12 +34,18 @@ impl Marker {
         Offset::new(u64::from_le(self.0) & !(0b1111 << Self::STATE_BIT_OFFSET))
     }
 
+    /// Returns the state of this marker.
     pub const fn state(self) -> State {
         if self.0 & (0b1 << Self::STATE_BIT_OFFSET) == 0 {
             State::Clean
         } else {
             State::Dirty
         }
+    }
+
+    /// Sets the state of this marker.
+    pub const fn set_state(&mut self, state: State) {
+        self.0 = (self.0 & !(0b1 << Self::STATE_BIT_OFFSET)) | ((state as u64) << Self::STATE_BIT_OFFSET);
     }
 
     /// Returns the padding length encoded in this `Marker`.
@@ -85,5 +91,14 @@ mod tests {
         assert_eq!(marker.padding_len(), 0b101);
         assert_eq!(Marker::new(Offset::<()>::new(42), 0b101, Clean).to_bytes(),
                   [42,0,0,0,0,0,0,0b101_0_0000]);
+    }
+
+    #[test]
+    fn set_state() {
+        let mut marker = Marker::new(Offset::<()>::new(0), 0, State::Clean);
+        assert_eq!(marker.state(), State::Clean);
+
+        marker.set_state(State::Dirty);
+        assert_eq!(marker.state(), State::Dirty);
     }
 }

@@ -1,6 +1,7 @@
 use std::cmp;
 use std::fmt;
 use std::marker::PhantomData;
+use std::ops;
 
 use super::{Header, HeaderExt, Marker};
 
@@ -90,5 +91,12 @@ impl<H> cmp::PartialOrd for Offset<H> {
 impl<H> cmp::Ord for Offset<H> {
     fn cmp(&self, rhs: &Self) -> cmp::Ordering {
         self.raw.cmp(&rhs.raw)
+    }
+}
+
+impl<H> ops::AddAssign<usize> for Offset<H> {
+    fn add_assign(&mut self, rhs: usize) {
+        // TODO: check for overflow
+        self.raw += rhs as u64;
     }
 }
