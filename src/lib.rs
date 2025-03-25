@@ -74,7 +74,7 @@ impl<H: Header> Breccia<H> {
         ))
     }
 
-    /// Opens a new `Breccia`.
+    /// Opens an existing breccia file.
     pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         Self::open_file(File::open(path)?)
     }
