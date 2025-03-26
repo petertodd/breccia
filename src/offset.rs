@@ -100,3 +100,19 @@ impl<H> ops::AddAssign<usize> for Offset<H> {
         self.raw += rhs as u64;
     }
 }
+
+impl<H> ops::Add<usize> for Offset<H> {
+    type Output = Self;
+
+    fn add(self, rhs: usize) -> Self {
+        Offset::new(self.raw + rhs as u64)
+    }
+}
+
+impl<H> ops::Sub<usize> for Offset<H> {
+    type Output = Self;
+
+    fn sub(self, rhs: usize) -> Self {
+        Offset::new(self.raw - rhs as u64)
+    }
+}

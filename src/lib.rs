@@ -222,11 +222,12 @@ impl<'a, H: Header> Blobs<'a, H> {
     fn new(mut map: &'a [Marker], mut offset: Offset<H>) -> Self {
         // Find the first marker
         while let Some((potential_marker, rest)) = map.split_first() {
-            map = rest;
             if potential_marker.offset() == offset {
                 break
+            } else {
+                map = rest;
+                offset += 1;
             }
-            offset = offset.offset(1);
         }
 
         Self {
@@ -241,11 +242,10 @@ impl<'a, H: Header> Iterator for Blobs<'a, H> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let mut blob_len_words = 0;
-
-        while let Some(potential_marker) = self.map.get(blob_len_words) {
+        while let Some(potential_marker) = self.map.get(1 + blob_len_words) {
             let end_offset = self.offset.offset(blob_len_words + 1);
             if potential_marker.offset() == end_offset {
-                let blob = Marker::slice_to_bytes(&self.map[0 .. blob_len_words]);
+                let blob = Marker::slice_to_bytes(&self.map[1 .. 1 + blob_len_words]);
 
                 if let Some(blob_len) = blob.len().checked_sub(potential_marker.padding_len()) {
                     let (blob, _padding) = blob.split_at(blob_len);
@@ -263,6 +263,56 @@ impl<'a, H: Header> Iterator for Blobs<'a, H> {
             blob_len_words += 1;
         }
         None
+    }
+}
+
+impl<H: Header> std::iter::FusedIterator for Blobs<'_, H> {
+}
+
+impl<'a, H: Header> std::iter::DoubleEndedIterator for Blobs<'a, H> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        // Consume padding
+        loop {
+            if let &[.., maybe_marker, maybe_padding] = self.map {
+                if maybe_marker.offset() == self.offset + self.map.len() - 2 &&
+                   maybe_padding.offset() == self.offset + self.map.len() - 1 &&
+                   maybe_padding.is_padding()
+                {
+                    self.map = &self.map[.. self.map.len() - 1];
+                } else {
+                    break
+                }
+            } else {
+                break
+            }
+        };
+
+        if self.map.len() < 2 {
+            return None
+        }
+
+        let end_marker = self.map.last().expect("map not empty");
+
+        let mut start_offset = self.map.len().checked_sub(2).expect("map not empty");
+        loop {
+            // Check if start_offset is the beginning of a valid blob
+            if self.map[start_offset].offset() == Offset::<H>::new(start_offset as u64) {
+                // It is, so check if the blob itself is valid.
+                let blob = Marker::slice_to_bytes(&self.map[start_offset + 1 .. self.map.len() - 1]);
+                if let Some(blob_len) = blob.len().checked_sub(end_marker.padding_len()) {
+                    self.map = &self.map[0 .. start_offset + 1];
+                    let (blob, _padding) = blob.split_at(blob_len);
+                    return Some((Offset::new(start_offset as u64), blob))
+                } else {
+                    unreachable!("we already consumed all padding")
+                }
+            }
+
+            // Should be true, as we already consumed all the padding, and checked that there is at
+            // least one valid blob.
+            assert!(start_offset > 0);
+            start_offset -= 1;
+        }
     }
 }
 
@@ -490,6 +540,41 @@ mod tests {
                    Some((Offset::new(2), &[42][..])));
         assert_eq!(blobs.next(),
                    None);
+
+        Ok(())
+    }
+
+    #[test]
+    fn blobs_reversed() -> io::Result<()> {
+        let mut breccia = BrecciaMut::create_from_file(tempfile()?, TestHeader(0x42))?;
+
+        let mut blobs = breccia.blobs();
+        assert_eq!(blobs.next_back(), None);
+        assert_eq!(blobs.next_back(), None);
+
+        let offset = breccia.write_blob(&[])?;
+        assert_eq!(offset.raw, 0);
+
+        assert_eq!(&breccia.map[..],
+            &[0,0x42,0,0,0,0,0,0,
+              0,0,0,0,0,0,0,0,
+              1,0,0,0,0,0,0,0]);
+
+        let mut blobs = breccia.blobs();
+        assert_eq!(blobs.next_back(),
+                   Some((Offset::new(0), &[][..])));
+        assert_eq!(blobs.next_back(), None);
+        assert_eq!(blobs.next_back(), None);
+
+        breccia.write_blob(b"very blobby blob")?;
+
+        let mut blobs = breccia.blobs();
+        assert_eq!(blobs.next_back(),
+                   Some((Offset::new(1), &b"very blobby blob"[..])));
+        assert_eq!(blobs.next_back(),
+                   Some((Offset::new(0), &[][..])));
+        assert_eq!(blobs.next_back(), None);
+        assert_eq!(blobs.next_back(), None);
 
         Ok(())
     }

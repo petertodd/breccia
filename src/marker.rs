@@ -29,6 +29,14 @@ impl Marker {
         Self::new(offset, 7, Dirty)
     }
 
+    pub fn is_padding(&self) -> bool {
+        if self.padding_len() == 7 && self.state() == Dirty {
+            true
+        } else {
+            false
+        }
+    }
+
     /// Returns the `Offset` this `Marker` represents.
     pub const fn offset<H>(self) -> Offset<H> {
         Offset::new(u64::from_le(self.0) & !(0b1111 << Self::STATE_BIT_OFFSET))
