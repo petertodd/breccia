@@ -34,6 +34,14 @@ pub struct Breccia<H = ()> {
     fd: File,
 }
 
+// SAFETY: the markers pointer is only ever used to create a &[Marker] slice
+unsafe impl<H> Sync for Breccia<H> {
+}
+
+// SAFETY: the markers pointer is only ever used to create a &[Marker] slice
+unsafe impl<H> Send for Breccia<H> {
+}
+
 /// A mutable `Breccia`, that can have blobs written to it.
 #[derive(Debug)]
 pub struct BrecciaMut<H = ()> {
