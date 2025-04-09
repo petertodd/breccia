@@ -1,3 +1,5 @@
+//! Single-file, append-only, blob storage with the option of efficient random access and search.
+
 #![feature(slice_as_chunks)]
 
 use std::fmt;
