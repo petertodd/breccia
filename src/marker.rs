@@ -9,19 +9,19 @@ use self::State::*;
 
 /// A marker used to distinguish blob boundaries, and determine blob length.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Marker(pub(crate) u64);
+pub struct Marker(pub(crate) usize);
 
 impl Marker {
     /// The offset, in bits, that the padding length is encoded in.
-    const PADDING_LEN_OFFSET: u32 = u64::BITS - 3;
+    const PADDING_LEN_OFFSET: u32 = usize::BITS - 3;
 
-    const STATE_BIT_OFFSET: u32 = u64::BITS - 4;
+    const STATE_BIT_OFFSET: u32 = usize::BITS - 4;
 
     /// Creates a new `Marker` from an `Offset` and a padding length.
     pub const fn new<H>(offset: Offset<H>, padding_len: usize, dirty: State) -> Self {
         let mut raw = offset.raw;
-        raw |= (padding_len as u64) << Self::PADDING_LEN_OFFSET;
-        raw |= (dirty as u64) << Self::STATE_BIT_OFFSET;
+        raw |= padding_len << Self::PADDING_LEN_OFFSET;
+        raw |= (dirty as usize) << Self::STATE_BIT_OFFSET;
         Marker(raw.to_le())
     }
 
@@ -39,7 +39,7 @@ impl Marker {
 
     /// Returns the `Offset` this `Marker` represents.
     pub const fn offset<H>(self) -> Offset<H> {
-        Offset::new(u64::from_le(self.0) & !(0b1111 << Self::STATE_BIT_OFFSET))
+        Offset::new(usize::from_le(self.0) & !(0b1111 << Self::STATE_BIT_OFFSET))
     }
 
     /// Returns the state of this marker.
@@ -53,12 +53,12 @@ impl Marker {
 
     /// Sets the state of this marker.
     pub const fn set_state(&mut self, state: State) {
-        self.0 = (self.0 & !(0b1 << Self::STATE_BIT_OFFSET)) | ((state as u64) << Self::STATE_BIT_OFFSET);
+        self.0 = (self.0 & !(0b1 << Self::STATE_BIT_OFFSET)) | ((state as usize) << Self::STATE_BIT_OFFSET);
     }
 
     /// Returns the padding length encoded in this `Marker`.
     pub const fn padding_len(self) -> usize {
-        (u64::from_le(self.0) >> Self::PADDING_LEN_OFFSET) as usize
+        usize::from_le(self.0) >> Self::PADDING_LEN_OFFSET
     }
 
     /// Converts this `Marker` to the raw, serialized, byte format.
@@ -78,7 +78,7 @@ impl Marker {
 
 impl From<[u8; size_of::<Self>()]> for Marker {
     fn from(buf: [u8; size_of::<Self>()]) -> Self {
-        Self(u64::from_le_bytes(buf))
+        Self(usize::from_le_bytes(buf))
     }
 }
 

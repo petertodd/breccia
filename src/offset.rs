@@ -7,7 +7,7 @@ use super::{Header, HeaderExt, Marker};
 
 /// An offset to a blob inside of a `Breccia`.
 pub struct Offset<H> {
-    pub(crate) raw: u64,
+    pub(crate) raw: usize,
     _marker: PhantomData<fn(&H) -> ()>,
 }
 
@@ -27,7 +27,7 @@ impl<H> Offset<H> {
     /// Creates a new offset.
     ///
     /// The value is *not* a file offset.
-    pub(crate) const fn new(raw: u64) -> Self {
+    pub(crate) const fn new(raw: usize) -> Self {
         Self {
             raw,
             _marker: PhantomData,
@@ -37,18 +37,20 @@ impl<H> Offset<H> {
 
 impl<H: Header> Offset<H> {
     pub(crate) fn try_from_file_offset(file_offset: u64) -> Result<Self, TryFromFileOffsetError> {
-        let offset = file_offset.checked_sub(H::SIZE_WITH_PADDING as u64)
+        let file_offset = usize::try_from(file_offset).expect("u64 to usize conversion should be lossless");
+
+        let offset = file_offset.checked_sub(H::SIZE_WITH_PADDING)
                                 .ok_or(TryFromFileOffsetError::WithinHeader)?;
 
-        if (offset % (size_of::<Marker>() as u64)) != 0 {
+        if (offset % size_of::<Marker>()) != 0 {
             return Err(TryFromFileOffsetError::Unaligned);
         }
 
-        Ok(Self::new(offset / size_of::<Marker>() as u64))
+        Ok(Self::new(offset / size_of::<Marker>()))
     }
 
     pub(crate) fn offset(self, n: usize) -> Self {
-        Self::new(self.raw + n as u64)
+        Self::new(self.raw + n)
     }
 
     pub(crate) fn midpoint(self, rhs: Offset<H>) -> Self {
@@ -97,7 +99,7 @@ impl<H> cmp::Ord for Offset<H> {
 impl<H> ops::AddAssign<usize> for Offset<H> {
     fn add_assign(&mut self, rhs: usize) {
         // TODO: check for overflow
-        self.raw += rhs as u64;
+        self.raw += rhs;
     }
 }
 
@@ -105,7 +107,7 @@ impl<H> ops::Add<usize> for Offset<H> {
     type Output = Self;
 
     fn add(self, rhs: usize) -> Self {
-        Offset::new(self.raw + rhs as u64)
+        Offset::new(self.raw + rhs)
     }
 }
 
@@ -113,6 +115,6 @@ impl<H> ops::Sub<usize> for Offset<H> {
     type Output = Self;
 
     fn sub(self, rhs: usize) -> Self {
-        Offset::new(self.raw - rhs as u64)
+        Offset::new(self.raw - rhs)
     }
 }

@@ -306,13 +306,13 @@ impl<'a, H: Header> std::iter::DoubleEndedIterator for Blobs<'a, H> {
         let mut start_offset = self.map.len().checked_sub(2).expect("map not empty");
         loop {
             // Check if start_offset is the beginning of a valid blob
-            if self.map[start_offset].offset() == Offset::<H>::new(start_offset as u64) {
+            if self.map[start_offset].offset() == Offset::<H>::new(start_offset) {
                 // It is, so check if the blob itself is valid.
                 let blob = Marker::slice_to_bytes(&self.map[start_offset + 1 .. self.map.len() - 1]);
                 if let Some(blob_len) = blob.len().checked_sub(end_marker.padding_len()) {
                     self.map = &self.map[0 .. start_offset + 1];
                     let (blob, _padding) = blob.split_at(blob_len);
-                    return Some((Offset::new(start_offset as u64), blob))
+                    return Some((Offset::new(start_offset), blob))
                 } else {
                     unreachable!("we already consumed all padding")
                 }
@@ -344,7 +344,7 @@ impl<H: Header> Breccia<H> {
     pub fn binary_search<F, R>(&mut self, f: F) -> Option<R>
         where F: FnMut(Offset<H>, &[u8]) -> Result<Option<R>, Search>
     {
-        let last_offset = Offset::new(self.map().len() as u64);
+        let last_offset = Offset::new(self.map().len());
         self.binary_search_in_range(f, Offset::new(0) .. last_offset)
     }
 
