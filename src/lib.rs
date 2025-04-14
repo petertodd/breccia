@@ -71,6 +71,15 @@ impl<H> Breccia<H> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GetBlobError {
+    /// The offset is beyond the range of the breccia.
+    OutOfRange,
+
+    /// There is no blob starting at the provided offset; the offset points to either the middle of
+    /// a different blob, or padding data.
+    Unaligned,
+}
 
 
 impl<H: Header> Breccia<H> {
@@ -125,6 +134,35 @@ impl<H: Header> Breccia<H> {
     fn map(&self) -> &[Marker] {
         unsafe {
             &*self.markers
+        }
+    }
+
+    /// Gets the blob at an offset.
+    pub fn get_blob(&mut self, offset: Offset<H>) -> Result<&[u8], GetBlobError> {
+        let first_mark = self.map().get(offset.raw)
+                                   .ok_or(GetBlobError::OutOfRange)?;
+
+        if first_mark.offset() == offset {
+            let end_offset = offset + 1;
+
+            while let Some(potential_mark) = self.map().get(end_offset.raw) {
+                if potential_mark.is_padding() {
+                    todo!("blob is invalid");
+                } else if potential_mark.offset() == end_offset {
+                    // We're at the end of the blob.
+                    let blob = Marker::slice_to_bytes(&self.map()[offset.raw + 1 .. end_offset.raw]);
+
+                    if let Some(blob_len) = blob.len().checked_sub(potential_mark.padding_len()) {
+                        let (blob, _padding) = blob.split_at(blob_len);
+                        return Ok(blob);
+                    } else {
+                        todo!("handle incorrect padding length")
+                    }
+                }
+            }
+            todo!("last blob not fully written")
+        } else {
+            Err(GetBlobError::Unaligned)
         }
     }
 
