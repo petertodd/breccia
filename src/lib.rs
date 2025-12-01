@@ -106,7 +106,7 @@ impl<H: Header> Breccia<H> {
             return Err(io::Error::other("bad magic"));
         }
 
-        let mut header_bytes = vec![0u8; H::SIZE_WITH_PADDING];
+        let mut header_bytes = vec![0u8; H::SIZE_WITH_PADDING - H::MAGIC.len()];
         fd.read_exact(&mut header_bytes)?;
         let header = H::deserialize(&header_bytes).map_err(io::Error::other)?;
 
@@ -703,6 +703,35 @@ mod tests {
             Some(*expected_offset));
         }
 
+        Ok(())
+    }
+
+    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+    struct BigHeader(u8);
+
+    impl Header for BigHeader {
+        const MAGIC: &[u8] = b"\x00\x01\x02\x03";
+        const SERIALIZED_SIZE: usize = 1;
+
+        fn serialize(&self, dst: &mut [u8]) {
+            dst[0] = self.0;
+        }
+
+        type DeserializeError = std::convert::Infallible;
+        fn deserialize(src: &[u8]) -> Result<Self, Self::DeserializeError> {
+            Ok(Self(src[0]))
+        }
+    }
+
+    #[test]
+    fn create_big_header() -> io::Result<()> {
+        let breccia = BrecciaMut::create_from_file(tempfile()?, BigHeader(0x42))?;
+
+        assert_eq!(&breccia.map[..],
+                   b"\x00\x01\x02\x03\x42\x00\x00\x00\
+                     \x00\x00\x00\x00\x00\x00\x00\x00");
+        assert_eq!(&breccia.map(),
+                   &[Marker(0)]);
         Ok(())
     }
 }
