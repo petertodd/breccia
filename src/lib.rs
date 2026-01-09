@@ -377,7 +377,7 @@ pub enum Search {
 
 impl<H: Header> Breccia<H> {
     /// Binary searches for a given blob.
-    pub fn binary_search<F, R>(&mut self, f: F) -> Option<R>
+    pub fn binary_search<F, R>(&self, f: F) -> Option<R>
         where F: FnMut(Offset<H>, &[u8]) -> Result<Option<R>, Search>
     {
         let last_offset = Offset::new(self.map().len());
@@ -385,7 +385,7 @@ impl<H: Header> Breccia<H> {
     }
 
     /// Binary searches for a given blob, within an `Offset` range.
-    pub fn binary_search_in_range<F, R>(&mut self, mut f: F, range: Range<Offset<H>>) -> Option<R>
+    pub fn binary_search_in_range<F, R>(&self, mut f: F, range: Range<Offset<H>>) -> Option<R>
         where F: FnMut(Offset<H>, &[u8]) -> Result<Option<R>, Search>
     {
         let midpoint = range.start.midpoint(range.end);
