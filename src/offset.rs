@@ -2,6 +2,7 @@ use std::cmp;
 use std::fmt;
 use std::marker::PhantomData;
 use std::ops;
+use std::hash;
 
 use super::{Header, HeaderExt, Marker};
 
@@ -93,6 +94,12 @@ impl<H> cmp::PartialOrd for Offset<H> {
 impl<H> cmp::Ord for Offset<H> {
     fn cmp(&self, rhs: &Self) -> cmp::Ordering {
         self.raw.cmp(&rhs.raw)
+    }
+}
+
+impl<H> hash::Hash for Offset<H> {
+    fn hash<W: hash::Hasher>(&self, state: &mut W) {
+        self.raw.hash(state)
     }
 }
 
