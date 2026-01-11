@@ -251,8 +251,13 @@ impl<H: Header> Breccia<H> {
 
 /// An iterator over the blobs (and their offsets) in a `Breccia`.
 pub struct Blobs<'a, H> {
-    offset: Offset<H>,
+    /// The map of marker words this iterator is acting over
     map: &'a [Marker],
+
+    /// The offset of the first marker in the map.
+    ///
+    /// Thus, `&self.map[0] + self.offset` gives the true offset of the first marker in the map.
+    offset: Offset<H>,
 }
 
 impl<H> fmt::Debug for Blobs<'_, H> {
