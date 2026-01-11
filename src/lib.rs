@@ -390,34 +390,50 @@ impl<H: Header> Breccia<H> {
     }
 
     /// Binary searches for a given blob, within an `Offset` range.
+    ///
+    /// # Panics
+    ///
+    /// Panics if range `start > end`.
     pub fn binary_search_in_range<F, R>(&self, mut f: F, range: Range<Offset<H>>) -> Option<R>
         where F: FnMut(Offset<H>, &[u8]) -> Result<Option<R>, Search>
     {
+        if range.start.raw > range.end.raw {
+            panic!("range.start > range.end")
+        }
+
+        // TODO: should we panic if range.start is past the end of the map?
+
+        // If the range is empty, we're done.
+        if range.start == range.end {
+            return None;
+        }
+
         let midpoint = range.start.midpoint(range.end);
-        let mut blobs = Blobs::<H>::new(&self.map()[midpoint.raw as usize..], midpoint);
+        let mut blobs = Blobs::<H>::new(&self.map()[midpoint.raw as usize ..], midpoint);
 
         loop {
-            // FIXME: handle a degenerate range
             if let Some((offset, blob)) = blobs.next() {
-                match f(offset, blob) {
-                    Ok(Some(r)) => break Some(r),
-                    Ok(None) => break None,
-                    Err(Search::Next) => {
-                        continue
-                    },
-                    Err(Search::Right) => break self.binary_search_in_range(f, midpoint .. range.end),
-                    Err(Search::Left) => break self.binary_search_in_range(f, range.start .. midpoint),
+                if offset < range.end {
+                    match f(offset, blob) {
+                        Ok(Some(r)) => break Some(r),
+                        Ok(None) => break None,
+                        Err(Search::Next) => {
+                            continue
+                        },
+                        Err(Search::Right) => break self.binary_search_in_range(f, midpoint.offset(1) .. range.end),
+                        Err(Search::Left) => break self.binary_search_in_range(f, range.start .. midpoint),
+                    }
                 }
+            }
+
+            // We've search the entire range, starting from the midpoint, without finding the
+            // target.
+            //
+            // If the left side is non-empty, we still need to search it.
+            if range.start != midpoint {
+                break self.binary_search_in_range(f, range.start .. midpoint)
             } else {
-                // We've search the entire range, starting from the midpoint, without finding the
-                // target.
-                //
-                // If the left side is non-empty, we still need to search it.
-                if range.start != midpoint {
-                    break self.binary_search_in_range(f, range.start .. midpoint)
-                } else {
-                    break None
-                }
+                break None
             }
         }
     }
@@ -653,7 +669,6 @@ mod tests {
         Ok(())
     }
 
-
     #[test]
     fn binary_search_on_empty_blobs() -> io::Result<()> {
         let mut breccia = BrecciaMut::create_from_file(tempfile()?, TestHeader(0x42))?;
@@ -708,6 +723,60 @@ mod tests {
             Some(*expected_offset));
         }
 
+        Ok(())
+    }
+
+    #[test]
+    fn binary_search_for_ints_with_padding() -> io::Result<()> {
+        let mut b = BrecciaMut::create_from_file(tempfile()?, TestHeader(0x42))?;
+
+        let mut batch = b.start_batch()?;
+        let mut expected_offsets = vec![];
+        for i in 0 .. 100u32 {
+            let mut blob: Vec<u8> = vec![];
+            blob.extend(&i.to_le_bytes());
+            blob.extend(&[0u8; 100]);
+
+            let offset = batch.write_blob(&i.to_le_bytes())?;
+            expected_offsets.push((i, offset));
+        }
+
+        batch.commit()?;
+
+        for (i, expected_offset) in &expected_offsets {
+            let mut seen_offsets = std::collections::HashSet::new();
+            assert_eq!(b.binary_search(|offset, blob| {
+                // Make sure each offset is only tried once.
+                assert!(seen_offsets.insert(offset));
+
+                let found = u32::from_le_bytes(blob[0 .. 4].try_into().unwrap());
+                if *i == found {
+                    Ok(Some(offset))
+                } else if *i < found {
+                    Err(Search::Left)
+                } else { // if i > found
+                    Err(Search::Right)
+                }
+            }),
+            Some(*expected_offset));
+        }
+
+        Ok(())
+    }
+
+    /// Make sure midpoints aren't tried twice.
+    #[test]
+    fn binary_search_on_large_singular_blob() -> io::Result<()> {
+        let mut b = BrecciaMut::create_from_file(tempfile()?, TestHeader(0x42))?;
+
+        b.write_blob(&[0u8; 1000])?;
+
+        assert!(b.binary_search(|offset, blob| {
+            assert_eq!(offset.raw, 0);
+            assert_eq!(blob, &[0u8; 1000]);
+
+            Result::<Option<()>, _>::Err(Search::Right)
+        }).is_none());
         Ok(())
     }
 
