@@ -1,6 +1,4 @@
 #![feature(test)]
-#![feature(array_windows)]
-#![feature(array_chunks)]
 
 extern crate test;
 use test::bench::{Bencher, black_box};
