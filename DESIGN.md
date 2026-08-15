@@ -52,3 +52,8 @@ collision, any additional amount of padding is also non-colliding. Thus even in
 the worst possible case, a blob consisting of N words can only have N
 collisions, and thus at most N bytes of padding are necessary to avoid all
 collisions.
+
+
+# Citations
+
+https://pvk.ca/Blog/2021/01/11/stuff-your-logs/
